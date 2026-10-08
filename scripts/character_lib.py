@@ -51,7 +51,7 @@ def open_danbooru_reader():
             f"  {CSV_PATH}",
             file=sys.stderr,
         )
-        sys.exit(1)
+        return None
     return csv.DictReader(CSV_PATH.open("r", encoding="utf-8"))
 
 
@@ -127,7 +127,8 @@ def cmd_search(args):
 
     remaining = args.limit - len(extra_results)
     danbooru_results = search_rows(
-        open_danbooru_reader(), args.keyword, fields, remaining, args.threshold, args.exact
+        open_danbooru_reader() if remaining > 0 else None,
+        args.keyword, fields, remaining, args.threshold, args.exact
     )
 
     results = extra_results + danbooru_results

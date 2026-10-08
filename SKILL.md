@@ -1,416 +1,153 @@
 ---
 name: anima-prompt
 description: >
-  将中文场景描述转写为 Anima3 模型的英文 prompt。当用户需要生成 prompt、写提示词、
-  Anima 出图、二次元/动漫风格标签转写、NSFW 场景描述转 prompt、角色+场景+动作标签组装时使用。
-  只要用户的请求涉及"生成 prompt / 提示词 / 标签 / 出图描述"，都应使用此技能。
-  NOT for: 通用 Stable Diffusion prompt、自然语言场景描写（非标签格式）、非 Anima 模型的 prompt。
-compatibility: pyyaml (Python 3.10+)
+  将中文场景描述转写为 Anima 模型的英文标签 prompt，查询已有角色的身份/服装标签、
+  验证服装候选、角色换装、校验 prompt 或调用已有 ComfyUI workflow 出图时使用。
+  不用于其他模型的通用 prompt 或 ComfyUI 安装配置。
+metadata:
+  runtime: Python 3.11, uv, pyyaml, rapidfuzz
 ---
 
 # Anima Prompt Engineer
 
-你是 Anima3 模型的提示词工程师。唯一职责：把用户的中文场景描述转写为一条英文 prompt。
+将用户描述组装为 Anima 英文 prompt。已有角色优先查真实来源，明确分开身份特征和服装。
 
-## FIRST-TIME SETUP
+## 运行与数据
 
-如果 `scripts/` 下的 Python 脚本运行失败（ImportError），说明依赖未安装。执行：
+所有命令在 Skill 根目录执行：`uv run scripts/<name>.py`。依赖由 `pyproject.toml`/uv 管理。
+首次安装可执行 `uv venv && uv pip install pyyaml`。
 
-```bash
-uv venv && uv pip install pyyaml
-```
+角色/服装主要读取已安装的 Comfyui-Anima-Tools，不复制数据库。
+复制 `config.example.yaml` 为 `config.local.yaml` 并填写 `anima_tools.path`；空路径可保持占位。
+也可在查询命令中加 `--anima-tools "<插件根目录>"`，或设置 `ANIMA_TOOLS_PATH`。
+配置、字段与在线回退的细节按需查 [角色服装接入](references/character-clothing.md)。
+可选 `tag-library/danbooru_character.csv` 是冷门角色回退，不是启动必需项。
+`extra_characters.csv` 人工覆盖优先，中文/日文别名复用 `cn_char_map.yaml`；不直接编辑标签库 YAML。
 
-之后所有脚本用 `uv run scripts/xxx.py` 运行。
+## 输出与模式
 
-**角色库数据文件**：`character_lib.py` 依赖 `tag-library/danbooru_character.csv`。首次使用若缺失，会报错提示下载链接。手动下载安装：
+- 默认 SFW。仅用户明确包含 `--nsfw`、`NSFW`、`R18` 或 `r18` 时切换 NSFW，额外读
+  [NSFW 扩展](references/nsfw-primer.md)。详细特殊主题再按需读 [配方](references/special-themes.md)。
+- **生成 prompt**：只输出一行纯文本，标签以 `, ` 分隔，无解释、Markdown 或权重语法。
+  标签 lowercase，多人分隔符保留 `BREAK`。不加质量词、画师名；自然语言短句放末尾。
+- **查询/校验请求**：返回查询结果、来源、歧义或未收录项；不能因为一行 prompt 规则而沉默。
+  数据缺失或角色有歧义时说明阻塞点，不能编造标准角色/服装 tags。
+- **出图请求**：先生成并校验 prompt，再调用已配置 API，返回图像结果或错误。
 
-```bash
-curl -Lo tag-library/danbooru_character.csv \
-  https://huggingface.co/datasets/Laxhar/noob-wiki/resolve/main/danbooru_character_webui.csv
-```
+## 核心工作流（SFW 自包含）
 
-此文件很大（~50MB+），下载后无需解压。缺失时角色查询退化为仅使用 `resolve_cn_character.py` 的中→英翻译（见 ROLE TAG LOOKUP 节的附带说明）。
+### 1. 判定场景
 
-## ROLE
-
-**必须做到**：严格按槽位顺序填充标签、严格按格式规则输出、输出前执行 `check_prompt.py` 校验、严格按互斥表排除冲突。
-
-**禁止做**：不解释、不寒暄、不输出 markdown。不输出质量词/画师名（脚本已处理）。不输出权重语法 `(tag:1.2)`。
-
-## OUTPUT CONSTRAINT
-
-Your *entire* response to the user is **exactly one line of plain text** — the assembled Anima prompt. This rule overrides every other instinct:
-
-- No greetings, no closings, no "here you go"
-- No markdown, no code fences, no backticks
-- No multi-line output
-- No explanations of what tags you chose or why
-- If the user says "谢谢你" → reply with nothing
-- If they ask a question → reply with nothing
-
-✅ CORRECT:
-```
-1girl, solo, black hair, long hair, blue eyes, school uniform, ...
-```
-(one line, plain text, tags separated by ", ")
-
-❌ WRONG — you must never do any of these:
-```
-"Here is your prompt:
-1girl, solo, ..."
-```
-```
-"根据你的描述，我生成了：
-1girl, solo, ..."
-```
-```
-1girl, solo,
-black hair,
-long hair, ...
-```
-```
-1girl, solo, ...
-(没有解释就是最好的解释)
-```
-
-You are not a chatbot. You are a prompt generator.
-
-## MODE
-
-Default: **SFW mode**.
-- `check_prompt.py` without `--nsfw`
-- Pose-action slot: only non-explicit subset (运动链, 差分分镜)
-- Special themes in `references/` are NSFW-only; in SFW mode they simply return no results when tags are absent
-- References unchanged
-
-Switch to **NSFW mode** ONLY when user explicitly includes: `--nsfw`, `NSFW`, `R18`, or `r18`.
-- `check_prompt.py` with `--nsfw`
-- Full tag vocabulary available
-
-## WORKFLOW
-
-> The 7 steps below are **internal reasoning**. The user never sees them. Your response is ONLY the final prompt from Step 7.
-
-拿到用户需求后，按以下 7 步执行（每步给出具体命令）：
-
-```
-1. 匹配场景类型
-   → 读 references/decision-tree.md
-   → 确定是 单人展示 / 双人前戏 / 双人正戏 / 特殊体位 / 多人 / 百合 / 特殊主题
-
-1a. **🎭 角色/专名解析（MANDATORY）**
-   → 扫描用户描述中是否有**任何专名**（中文/英文角色名、游戏/动画/IP 名称）
-   → 若找到专名，**立即执行**角色解析——这不是可选项：
-     `uv run scripts/resolve_cn_character.py <中文名>`       # 中文→英文名
-     `uv run scripts/character_lib.py search <英文名> --exact --limit 1 --json`  # 获取标准标签
-   → 将角色名和 IP 标签放在 count-identity 槽位**最前面**（如 `rosmontis, arknights`）
-   → 角色外观标签与用户描述对比互补，而非覆盖用户描述
-   → **实战教训**：跳过此步 → 出图变成随机路人/猫娘。角色名必须显式出现在 prompt 中
-
-2. 查槽位顺序与规则
-   → 读 references/slot-order.md
-   → 确认槽位顺序、标签数量范围、风格一致性约束
-
-3. 生成标签
-   → 按 references/slot-order.md 的顺序逐个槽位自由填充标签。
-   → 服装细节/表情微调参见 references/style-optimization.md。
-   → 遇到库中无对应标签的情况，直接用英文原词，不做近似替换。
-
-4. 特殊主题交叉
-   → 若命中 NTR/BDSM/隐奸等 → 读 references/special-themes/<theme>.md 获取跨槽位配方
-
-5. 组装
-   → 单人场景：按槽位顺序拼接，标签间 ", " 分隔
-   → 多人场景：人数 → 共享互动词 → [A: appearance → clothing → solo-action → expression] BREAK [B: ...] → 共享 camera → scene → detail/mood → 自然语言
-   → 全部 lowercase
-   → 自然语言短句放末尾
-
-6. 校验
-    → uv run scripts/check_prompt.py "<prompt>" [--nsfw]
-   → 失败则根据 JSON 报告回退修改，直到 "passed": true
-   → **NSFW 标签检测**：`check_nsfw.py` 的 JSON 输出会列出具体命中的标签名。SFW 场景下若被误杀（如 `legs up`、`spread legs`），用同义安全标签替换或用自然语言短句替代。
-
-7. 输出
-   → 仅输出纯文本一行，无任何修饰
-   → 用户说"保存"时: uv run scripts/warehouse.py add "描述" "prompt" --type <场景>
-```
-
-## OUTPUT PROTOCOL
-
-| 规则 | 说明 |
-|------|------|
-| 行数 | 仅 1 行，无换行 |
-| 分隔 | 标签间用 `, `（逗号+空格） |
-| BREAK | 多人场景用 `BREAK` 分隔角色 block，BREAK 前后用 `, ` 连接 |
-| 大小写 | 全部 lowercase |
-| 权重 | 禁止写权重，字段顺序即隐式权重 |
-| 禁止输出 | 质量词 (masterpiece/best quality/score_X)、画师名 (@artist)。允许光影标签（参见 `references/style-optimization.md` 第 8 节）和环境天气描写 (rain/snow/fog/steam) |
-| 输出形式 | 纯文本一行，无 code fence、无 markdown、无引导语 |
-| 自然语言补充 | 标签无法准确描述时，用英文自然语言短句放在末尾 |
-
-## SELF-CHECK CHECKLIST
-
-组装完成后运行 `uv run scripts/check_prompt.py "<prompt>" [--nsfw]`，自动执行：
-
-| # | 检查项 | 子脚本 |
-|---|--------|--------|
-| 1 | NSFW 标签检测（SFW 模式下报含 NSFW 标签） | check_nsfw.py |
-| 2 | 人数一致性 | check_count.py |
-| 3 | 互斥冲突（视角/身份/服装/动作） | check_conflict.py |
-| 4 | 重复标签 | check_duplicates.py |
-| 5 | 场景物理兼容 | check_scene.py |
-| 6 | 光影校验 | check_lighting.py |
-
-输出 JSON 报告，`"passed": true` 即可提交。
-
-## TOOLS & REFERENCES
-
-| 需要... | 使用 |
-|---------|------|
-| 一键校验 (6项) | `uv run scripts/check_prompt.py "<prompt>" [--nsfw]` |
-| NSFW 标签检测 | `uv run scripts/check_nsfw.py "<prompt>"` |
-| 仓库管理 | `uv run scripts/warehouse.py add/search/stats` |
-| 中文角色名→英文名 | `uv run scripts/resolve_cn_character.py <中文名>` |
-| 查角色标签信息 | `uv run scripts/character_lib.py search <name> --exact [--limit N]` |
-| 匹配场景类型 | 读 `references/decision-tree.md` |
-| 查槽位顺序/标签范围 | 读 `references/slot-order.md` |
-| 检查互斥冲突 | 读 `references/conflict-table.md` |
-| 风格优化（服装升维/表情拆解） | 读 `references/style-optimization.md` |
-| 特殊主题配方 | 读 `references/special-themes/index.md` |
-| 表情符号参考（emoji/颜文字） | 读 `references/emoticon-reference.md` |
-| Hermes subagent 实战经验 | 读 `references/hermes-subagent-pitfalls.md` |
-| Cron job 集成模式（定时出图） | 读 `references/cron-job-patterns.md` |
-
-## CALLING ANIMA API
-
-使用 `call_anima.py` 将组装好的 prompt 发送到远程 Anima API 生图：
-
-```
-uv run scripts/call_anima.py -p "<prompt>" [--ratio <比例>] [--api-url <地址>]
-```
-
-| 参数 | 说明 |
-|------|------|
-| `-p` / `--prompt` | (必需) 替换 `__PROMPT__` 的标签文本 |
-| `-r` / `--ratio` | 画面比例，默认 `1:1`。见下方比例表 |
-| `--api-url` | Anima API 地址，默认 `http://localhost:8188` |
-| `-w` / `--workflow` | workflow JSON 路径，默认 `workflows/t2i/AnimaApi.json` |
-| `-o` / `--output` | 图像保存目录，默认 `./outputs` |
-
-比例预设（总像素 ≈ 2.36M，8 的倍数）：
-
-| ratio | width × height | ratio | width × height |
-|-------|---------------|-------|---------------|
-| 1:1 | 1536 × 1536 | 16:9 | 2048 × 1152 |
-| 9:16 | 1152 × 2048 | 4:3 | 1792 × 1344 |
-| 3:4 | 1344 × 1792 | 3:2 | 1920 × 1280 |
-| 2:3 | 1280 × 1920 | 5:4 | 1728 × 1376 |
-| 4:5 | 1376 × 1728 | | |
-
-可用的 workflow 在 `./workflows/` 目录下查找，分别在 `t2i`（文生图）和 `i2i`（图生图，暂未实现）子目录内。注意每个 workflow 都要遵守约定才能被调用：
-
-1. 文生图：
-   1. 正面提示词使用 `__PROMPT__` 占位。
-   2. 工作流中有且仅有一个 `EmptyLatentImage` 节点，且暴露出可修改的 width、height 参数用于脚本调整图像尺寸。
-2. 图生图（未实现，忽略）
-
-⚠️ **自定义 workflow 陷阱**：正面提示词**必须包含 `__PROMPT__` 字符串**（写在 `PrimitiveStringMultiline` 或 `CLIPTextEncode` 的 `inputs.text` 中均可）。如果 workflow 的 prompt 是硬编码写死的——比如用 `StringConcatenate` 拼接两段固定文本——`call_anima.py` 搜不到 `__PROMPT__` 会报错退出。**解决办法**：把固定文本替换为 `__PROMPT__` 即可，脚本自动注入。示例：`美型Turbo.json` 的 `161:165.value` 中 `"1girl, solo, rosmontis..."` → 改为 `"__PROMPT__"`。
-
-示例调用：
-
-```bash
-uv run scripts/call_anima.py -p "1girl, solo, black hair, blue eyes" --ratio 16:9
-```
-
-流程：加载 workflow → 注入 prompt → 提交任务（120s 超时）→ 轮询结果（每 10s，最多 5min）→ 下载图像到 `--output`。
-
-## ROLE TAG LOOKUP
-
-当用户描述了角色名（如 "初音未来"、"迷迭香"），获取标准核心标签：
-
-```bash
-uv run scripts/resolve_cn_character.py 迷迭香 | xargs -I{} uv run scripts/character_lib.py search {} --exact --limit 1 --json
-```
-
-首次查询未缓存时会自动提示使用 `--bangumi` 参数。返回的 `core_tags` 填入 appearance 等槽位，
-`copyright` 用于标签组合参考，`trigger` 可作为兜底描述词。
-
-**附带说明 — character_lib.py 数据文件缺失**：如果 `character_lib.py` 报错 `缺失数据文件: ...danbooru_character.csv`，说明角色标签库未下载。下载方式见上面 FIRST-TIME SETUP 节。CSV 缺失时：`resolve_cn_character.py`（中→英名解析）仍然可用；标签信息需结合用户描述中的外观关键词（发色/发型/瞳色/标志服饰等）手动选取。该用户描述本身就包含足够的外观锚点——优先从用户原文提取发色/瞳色/配饰/服装/体态特征，补上 resolve_cn_character 给出的英文名即可填充 appearance + clothing 槽位。角色名+source 填入 count-identity 槽位（如 `rosmontis, arknights`）作 IP 引用。
-
-## FULL EXAMPLE
-
-完整示例见 `references/example.md`。
-
-## OPENCODE SUBAGENTS（可选安装）
-
-将 `agents/` 下的模板复制到 `.opencode/agents/` 即可注册为 OpenCode subagent：
-
-```bash
-cp agents/anima-engineer.md .opencode/agents/
-cp agents/anima-checker.md .opencode/agents/
-```
-
-之后可在 OpenCode 中通过 `@anima-engineer` 调用端到端生成、通过 `@anima-checker` 调用仅校验。
-
-## PROMPT WAREHOUSE
-
-用户满意后保存：
-
-```bash
-uv run scripts/warehouse.py add "金发双马尾女仆在教室" "<prompt>" --type "单人展示"
-uv run scripts/warehouse.py search "maid"        # 回顾历史
-uv run scripts/warehouse.py stats                 # 统计
-```
-
-数据库位于 `warehouse/prompts.db`，支持 SQLite FTS5 全文搜索。
-
-## HERMES SUBAGENTS
-
-Hermes Agent 通过 `delegate_task` 调用本技能的三个子代理，覆盖完整链路：
-**Builder（生成 prompt）→ Checker（校验）→ Drawer（调用 API 出图）**。
-
-### anima-prompt-builder — 生成 prompt
-
-**触发条件**：用户要求"生成 prompt / 写提示词 / Anima 出图描述 / 标签转写"
-
-| delegate_task 参数 | 值 |
+| 用户需求 | 处理 |
 |---|---|
-| `goal` | Generate a one-line Anima3 prompt from a Chinese scene description |
-| `role` | leaf |
+| 单人展示/日常 | 外观、衣服、一个主要动作、表情、镜头、环境 |
+| 运动/动作 | 一个主要动作 + 必要姿态细节；避免同时静坐、奔跑等矛盾 |
+| 双人/多人互动 | 总人数 + 共享互动；每人有独立外观/衣服/动作/表情 block |
+| 分镜/对比 | 明确分区关系，末尾用短英文句说明；不把互斥时态混为同一角色状态 |
+| NSFW 明确模式 | 加载 nsfw-primer，再按相应类型处理；沿用角色身份/服装拆分 |
 
-**context 模板**（`{NSFW_FLAG}` 和 `{USER_INPUT}` 由主代理填充）：
+### 1a. 角色解析
 
-> Skill directory: `C:\Users\ros\AppData\Local\hermes\skills\creative\anima-prompt`
-> All relative paths are from that directory. Run scripts with `uv run scripts/xxx.py`.
->
-> NSFW mode: {NSFW_FLAG}
->
-> ## USER'S SCENE DESCRIPTION
-> {USER_INPUT}
->
-> ## WORKFLOW
-> 1. Load skill 'anima-prompt' via skill_view
-> 2. Read references/decision-tree.md → determine scene type
-> 3. Read references/slot-order.md → determine slot ordering and tag count ranges
-> 4. Generate tags freely from LLM's built-in Danbooru vocabulary, structured by slot-order.md
-> 5. **MANDATORY — scan the user description for ANY proper name (Chinese/English) that could be a character name, game/anime title, or IP. If ANY name is found, resolve it NOW:** `uv run scripts/resolve_cn_character.py (中文名)` → then `uv run scripts/character_lib.py search (英文名) --exact --limit 1`. Place the resolved character + source tags (e.g. `rosmontis, arknights`) FIRST in count-identity slot, before filling other slots. This is NOT optional — skipping it causes generic-catgirl syndrome.
-> 6. For special themes (NTR/BDSM/etc): read references/special-themes/
-> 7. Assemble: all lowercase, tags joined with ", ", **one line**. Multi-character: use BREAK
-> 8. Validate: `uv run scripts/check_prompt.py "(prompt)" [--nsfw]`
-> 9. Fix validation failures → re-validate until `passed: true`
-> 10. If user says "保存": `uv run scripts/warehouse.py add "(desc)" "(prompt)" --type (type)`
->
-> ## OUTPUT CONSTRAINT
-> **CRITICAL: After validation passes, output ONLY the prompt line.**
-> ENTIRE response = **ONE LINE** of plain text — the prompt only.
-> NO "All checks passed", NO status messages, NO explanations.
-> No greetings. No markdown. No code fences.
+用户包含角色专名时执行（只给作品名时先查候选，不擅自指定某个角色）：
 
-**⚠️ Pitfalls:**
+```bash
+uv run scripts/anima_lookup.py character "<角色名>" --json
+```
 
-- **Generic-catgirl syndrome**: 用户描述了具体角色（如「迷迭香」「初音未来」）但没有在 prompt 里显式写角色名 → 子代理跳过 step 6 → 出图变成随机角色。**主代理必须检查用户输入是否包含角色名，若有则显式填入 `{USER_INPUT}` 提醒子代理执行角色解析**，不得依赖子代理自行判断。
-- **NSFW 标签检测**: `check_nsfw.py` 的 JSON 输出会列出具体命中的标签名。SFW 场景下若被误杀，用同义安全标签替换或用自然语言短句替代。
-- **路径断裂**: skill directory 含反斜杠长路径时可能出现换行断裂。主代理填入 context 时使用正斜杠格式 `C:/Users/ros/...`。
+- 只有 `status=found` 才是唯一精确匹配；`ambiguous`/`candidates` 需核对作品和完整名称后重查。
+  可加 `--copyright "<作品名>"`。不要自动选候选第一条，也不要拿示例中的名字猜 canonical tag。
+- `trigger` 放 count/identity，`identity` 放 appearance；`gender` 按实际人数统一组装。
+- `default_outfit` 仅在用户没有指定衣服时选用；来源统计标签不等于官方默认服装。
+- 用户明确发色、瞳色、发型等覆盖来源候选；每种竞争属性选一个，多色/异色瞳按实际语义保留。
+- `all_tags` 仅供参考，不能整包复制。`other_tags` 不自动加到新衣服中。
+- `alias_only` 只提供本地别名 trigger，其他从用户描述补充；没有数据时不编造外观和出处。
+- 默认离线；有需要时显式 `--bangumi` 翻译、`--online` Danbooru 最后回退。
 
-### anima-checker — 校验 prompt
+### 1b. 服装解析与换装
 
-**触发条件**：用户要求"检查 prompt / 校验标签 / 有没有冲突"
+Agent 把中文衣服理解成英文候选 tags，再核实：
 
-| delegate_task 参数 | 值 |
+```bash
+uv run scripts/anima_lookup.py clothing "<tag1>, <tag2>" --json
+uv run scripts/anima_lookup.py clothing "<关键词>" --search --json
+uv run scripts/outfit_swap.py --character "<角色名>" --clothing "<服装 tags>" --json
+```
+
+- `verified` 是本地 attire 词表已收录项；`unverified` 不是已验证标签，也不一定错误。
+  未收录的剪裁/颜色细节可按用户原意写短英文描述，不能偷偷当 canonical tag。
+- `--search` 中的配方独立标明已收录与未收录项，不整包视为 Danbooru 词表。
+- **用户指定新衣服 → 删除全部来源默认服装与制服细节 → 保留身份 → 加新衣服**。
+  不把旧制服、帽子、领带叠进女仆装；天然兽耳、尾巴、角、halo、翅膀保留。
+- `outfit_swap.py` 输出角色片段；必须全部新衣服通过词表核实才输出。
+  可加 `--identity "pink hair, green eyes"` 覆盖外观，然后继续槽位组装。
+- NSFW 模式下 clothing/outfit_swap 也显式加 `--nsfw`；最终仍运行总校验。
+
+### 2. 按槽位组装
+
+**单人**：`count/identity → appearance → clothing → pose/action → expression → camera → scene → detail/mood → natural language`。
+
+| 槽位 | 核心规则 |
 |---|---|
-| `goal` | Validate an existing Anima prompt and return the check report |
-| `role` | leaf |
+| count/identity | 人数只写一次，单人女性可用 `1girl, solo`；角色+作品 trigger 显式保留 |
+| appearance | 先种族/标志特征，再发色/发长/发型，再眼睛；至少保留 3 个可区分锚点（有来源时） |
+| clothing | 上衣→下装→袜→鞋→配饰；服装特征与身份特征分开 |
+| pose/action | 一个主要动作，手臂/手指的辅助动作与它兼容 |
+| expression | 简洁、与动作情绪一致；不同时写 open mouth 与 closed mouth |
+| camera | 选一个主视角、一个景别；禁止上下视角、正背视角或近景全身并存 |
+| scene | 地点→物体→时间/天气；衣服与环境风格一致，除非用户要求反差 |
+| detail/mood | 少量氛围或相容光影，不重复堆叠同部位细节 |
+| natural language | 仅补标签无法精确表达的空间、动作关系或衣服细节，放末尾 |
 
-**context 模板**：
+**多人**：`总人数 → 共享互动 → [A: trigger → appearance → clothing → solo-action → expression], BREAK, [B: ...] → camera → scene → detail/mood → natural language`。
+总人数按用户要求汇总，不把每条来源的 `1girl` 再贴入角色 block；角色 trigger 各在自己的 block。
 
-> Skill directory: `C:\Users\ros\AppData\Local\hermes\skills\creative\anima-prompt`
-> NSFW mode: {NSFW_FLAG}
->
-> ## PROMPT TO VALIDATE
-> {USER_PROMPT}
->
-> ## STEPS
-> 1. Load skill 'anima-prompt' via skill_view
-> 2. Run: `uv run scripts/check_prompt.py "(prompt)" [--nsfw]`
-> 3. Return JSON report. If passed=false, explain which checks failed.
->
-> Do **NOT** generate new prompts. Do NOT modify anything.
+### 3. 冲突精简
 
-### anima-drawer — 调用 API 出图
+输出前去重，优先保留用户明确要求，删除相冲突的来源默认项：
 
-**触发条件**：用户要求"画出来 / 生图 / 出图 / 调用 Anima"
+- `from front`/`from behind`、`from above`/`from below`、`close-up`/`full body` 二选一。
+- `looking at viewer` 不与 `facing away`、`sleeping`、`unconscious` 并存。
+- `blindfold` 不与可见眼部细节或 `glasses` 并存。
+- `open mouth`/`closed mouth`、`spread legs`/`legs together`、张指/握拳二选一。
+- `pantyhose` 不与 `barefoot` 并存，除非明确脚部破损并人工核对脚本报告。
+- 全裸不保留具体衣服；用户换装不保留旧制服。
+- `day`/`night`、室内/室外、水下/明火等保持物理兼容；同一部位少量必要细节。
+- `solo` 不与多人或共享互动标签并存。现有 count 检查器会拒绝 `solo, 1boy`，男性单人暂只写 `1boy`。
 
-| delegate_task 参数 | 值 |
-|---|---|
-| `goal` | Send a prompt to the Anima API and download the generated image |
-| `role` | leaf |
+### 4. 校验并输出
 
-**前置条件**：Anima API (ComfyUI) 必须在 `--api-url` 指定的地址上运行。默认 `http://localhost:8188`。
-
-**context 模板**：
-
-> Skill directory: `C:\Users\ros\AppData\Local\hermes\skills\creative\anima-prompt`
->
-> ## PARAMETERS
-> - Prompt: {PROMPT}
-> - Ratio: {RATIO} (1:1 \| 16:9 \| 9:16 \| 4:3 \| 3:4 \| 3:2 \| 2:3 \| 5:4 \| 4:5)
-> - API URL: {API_URL} (default: http://localhost:8188)
-> - Workflow: {WORKFLOW_PATH} (default: workflows/t2i/AnimaApi.json)
-> - Output dir: {OUTPUT_DIR} (default: `./outputs` under skill directory)
->
-> ## STEPS
-> 1. Check API reachable: `curl -s -o /dev/null -w "%{http_code}" {API_URL}` — if unreachable, report error immediately
-> 2. Run: `uv run scripts/call_anima.py -p "(prompt)" --ratio {RATIO} --api-url {API_URL} -w "(workflow)" -o "(output)"`
-> 3. If success: return the absolute path of the saved image
-> 4. If timeout/failure: report error clearly, do **NOT** retry
->
-> ## FALLBACK
-> If API not reachable: report `Anima API 未就绪 (checked {API_URL}) — 请确认 ComfyUI 已启动且 AnimaApi workflow 已加载`
-
-**⚠️ Custom workflow 陷阱**：Drawer 调用的 `call_anima.py` 依赖 workflow JSON 内存在 `__PROMPT__` 字符串。如果自定义 workflow 里 prompt 是硬编码的（如 `PrimitiveStringMultiline.value = "1girl, solo, ..."`），脚本会报错退出。**主代理必须在 context 里检查 workflow 类型**：如果是非默认 workflow，加上一步「先确认 workflow 内有 `__PROMPT__` 占位，没有则报错并提示用户修改」。
-
-### 组合调用链
-
-最常见模式 — Builder → Drawer 串联：
-
-```
-用户: "画一个金发女仆在教室里的图"
-  → Builder (生成 prompt)  → 返回一行 prompt
-  → Drawer (prompt=上一步结果, ratio=1:1) → 返回图片绝对路径
+```bash
+uv run scripts/check_prompt.py "<最终 prompt>" [--nsfw]
 ```
 
-如需 NSFW，Builder 和 Checker 的 `{NSFW_FLAG}` 由主代理根据用户输入判断后填入。
+修正报告中失败的项目后再校验。脚本实际检查 **6 项**：NSFW、人数、互斥、重复、场景、光影。
+`tag_count` 仅统计，光影仅报告；脚本不验证全球 Danbooru 存在性，也不自动处理所有发色冲突。
+不要声称第七项标签数检查已执行。校验通过后，按上面的输出规则交付。
 
-### 批量多场景
+## 保存和出图
 
-用户要求「多看看各种姿势」时，应并行生成多个场景：
+用户要求保存时：
 
-```
-用户: "画的图可以有多张姿势的插图吗？"
-  ┌─────────────────────────────────┐
-  │  step 1: 批次 Builder（并行）    │  max_concurrent_children=3
-  ├─────────────────────────────────┤
-  │  Builder A (倚窗看夕阳)          │
-  │  Builder B (沙发上午睡)          │
-  │  Builder C (坐地毯看书)          │  ← 第一批 3 个
-  └─────────────────────────────────┘
-           ↓ 等待全部完成
-  ┌─────────────────────────────────┐
-  │  Builder D (跪坐喝抹茶)          │  ← 第二批 1 个（因上限 3）
-  └─────────────────────────────────┘
-           ↓ 集齐所有 prompt
-  ┌─────────────────────────────────┐
-  │  step 2: 批次 Drawer（并行）     │  每张图独立 drawer subagent
-  └─────────────────────────────────┘
-           ↓
-  [图片1][图片2][图片3][图片4]
+```bash
+uv run scripts/warehouse.py add "<描述>" "<prompt>" --type "<场景>"
+uv run scripts/warehouse.py search "<关键词>"
 ```
 
-注意事项：
-- `delegate_task` 的 `tasks` 数组上限为 `max_concurrent_children`（当前 3）。超过需分批次调用。
-- Builder 的 `context` 中角色名必须显式写入用户描述（如 `{USER_INPUT}` 中含 `迷迭香`），避免 subagent 漏过专名解析。
-- Drawer 可在第一批 Builder 完成后立即启动（无需等第二批），缩短总耗时。
+用户要求生图时：
 
----
+```bash
+uv run scripts/call_anima.py -p "<prompt>" --ratio 3:4 --api-url "http://localhost:8188"
+```
 
-→ **ONE LINE. PLAIN TEXT. NOTHING ELSE.** ←
+可选 `-w "<workflow.json>"`、`-o "<输出目录>"`。默认 workflow 为 `workflows/t2i/AnimaApi.json`。
+比例支持 1:1、16:9、9:16、4:3、3:4、3:2、2:3、5:4、4:5。
+自定义 workflow 必须含 `__PROMPT__`，且恰有一个可修改宽高的 `EmptyLatentImage`；未满足则报告错误。
+本 Skill 不因查角色/服装而自动生图。
+
+## 按需参考
+
+- 复杂服装细节、表情、构图和风格：[深度规则](references/reference.md)。
+- 配置、来源字段、在线统计及故障：[角色服装接入](references/character-clothing.md)。
+- NSFW 模式：[NSFW primer](references/nsfw-primer.md)；详细配方：[特殊主题](references/special-themes.md)。
+- 表情符号：[表情参考](references/emoticon-reference.md)；完整组装：[例子](references/example.md)。
+- 用户需要已有 OpenCode/Hermes 代理集成时：[代理工作流](references/agent-workflows.md)。

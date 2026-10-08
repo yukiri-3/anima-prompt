@@ -14,6 +14,7 @@
 
 import argparse
 import json
+import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -35,6 +36,8 @@ def load_cache():
 
 def save_cache(cache):
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if CACHE_PATH.exists():
+        shutil.copy2(CACHE_PATH, CACHE_PATH.with_suffix(CACHE_PATH.suffix + ".bak"))
     with open(CACHE_PATH, "w", encoding="utf-8") as f:
         yaml.dump(cache, f, allow_unicode=True, default_flow_style=False)
 
@@ -88,7 +91,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="中文角色名 → danbooru 蛇形命名"
     )
-    parser.add_argument("keyword", help="中文角色名")
+    parser.add_argument("keyword", help="中文角色名或待补录的别名")
+    parser.add_argument("--set", dest="alias_target", help="写入别名映射（值须为已核实的角色 tag），自动生成 .bak")
     parser.add_argument("--json", action="store_true", help="JSON 输出")
     parser.add_argument(
         "--bangumi", action="store_true",
@@ -98,6 +102,14 @@ def main():
 
     cache = load_cache()
     keyword = args.keyword
+
+    if args.alias_target is not None:
+        if not keyword.strip() or not args.alias_target.strip():
+            parser.error("别名及目标 tag 不能为空")
+        cache[keyword] = args.alias_target.strip()
+        save_cache(cache)
+        print(json.dumps({"chinese_name": keyword, "danbooru_name": cache[keyword]}, ensure_ascii=False) if args.json else cache[keyword])
+        return
 
     if keyword in cache:
         name = cache[keyword]

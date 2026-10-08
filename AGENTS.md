@@ -18,26 +18,28 @@
 
 | 命令 | 用途 |
 |------|------|
-| `uv run scripts/query_tags.py tree <slot>` | 查看槽位分类树 |
-| `uv run scripts/query_tags.py get <slot> <path>` | 读取标签列表 |
-| `uv run scripts/query_tags.py search <keyword>` | 搜索标签 |
-| `uv run scripts/check_prompt.py "<prompt>" [--nsfw]` | 七项校验（人数/冲突/重复/场景/灯光/标签数/NSFW检测）。默认 SFW 模式，含 NSFW 标签报错；`--nsfw` 允许 NSFW |
+| `uv run scripts/anima_lookup.py character "<name>" --json` | 统一角色查询（人工 CSV → Anima Tools → 可选 CSV） |
+| `uv run scripts/anima_lookup.py clothing "<tags>" --json` | 服装候选核实；`--search` 搜索标签/配方 |
+| `uv run scripts/outfit_swap.py --character "<name>" --clothing "<tags>" --json` | 保留身份，替换衣服，输出角色片段 |
+| `uv run scripts/check_prompt.py "<prompt>" [--nsfw]` | 六项校验（人数/冲突/重复/场景/灯光/NSFW）；标签数仅统计，灯光仅报告。默认 SFW；`--nsfw` 允许 NSFW |
 | `uv run scripts/check_nsfw.py "<prompt>"` | 独立 NSFW 标签检测 |
 | `uv run scripts/warehouse.py add/search/stats` | prompt 仓库管理 |
 
 ## 注意事项
 
-- `--json` 参数必须放在子命令之前：`query_tags.py --json list`
-- 写入操作 (add/rm/rename/mv) 自动生成 `.bak` 备份
+- 查询选项放在子命令之后，如 `anima_lookup.py character "初音未来" --json`
+- 别名写入通过 `resolve_cn_character.py "<别名>" --set "<已核实 tag>"`，自动生成 `.bak`；在线统一查询不写缓存
 - 编辑标签库通过脚本操作，**不要直接写 YAML**
-- 无测试框架，无 CI
+- 无第三方测试框架，无 CI；`uv run scripts/test_anima_lookup.py` 使用标准库和临时数据验证，无需 ComfyUI/网络
+- `config.local.yaml` 为忽略提交的本机配置；空路径表示占位，不自动扫描/下载/连接其他电脑
+- 每次查询只读 Comfyui-Anima-Tools 数据；身份与衣服分开，来源统计衣服不是默认服装的证明
 - `SKILL.md` 是核心交付物，修改前需确认与脚本能力一致
 - `docs/` 为归档目录（原始教程留存），不修改其中的文件
 
 ## 关键路径
 
 - Skill 本体: `SKILL.md`
-- 标签库: `tag-library/` (8 个 YAML)
-- 参考文件: `references/` (reference.md, nsfw-primer.md, special-themes.md, emoticon-reference.md, example.md)
-- 脚本工具: `scripts/` (9 个 .py)
+- 标签库: `tag-library/`（cn_char_map.yaml、extra_characters.csv；danbooru_character.csv 可选）
+- 参考文件: `references/`（核心深度参考、模式扩展、character-clothing.md 数据接入、agent-workflows.md 可选代理集成）
+- 脚本工具: `scripts/`（角色/服装查询、换装、回归验证及原有校验/API/仓库工具）
 - prompt 仓库: `warehouse/prompts.db` (SQLite FTS5)

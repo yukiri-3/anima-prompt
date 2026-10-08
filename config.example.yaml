@@ -1,0 +1,7 @@
+# 复制为 config.local.yaml（已忽略提交）。本机没有安装时保留空路径。
+anima_tools:
+  path: ""
+  character_data: js/character_data.js
+  official_data: js/character_official_data.json
+  attire_data: js/danbooru_attire_data.json
+  clothing_data: js/clothing_data.js

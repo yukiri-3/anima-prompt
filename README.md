@@ -6,6 +6,43 @@
 
 ---
 
+## 来源 / Upstream
+
+本项目基于 [Rosmeowtis/anima-prompt](https://github.com/Rosmeowtis/anima-prompt) 修改。
+原项目的功能介绍、基础工作流和使用说明沿用其 [README](https://github.com/Rosmeowtis/anima-prompt/blob/main/README.md)。
+新增角色/服装数据接入引用 [nregret/Comfyui-Anima-Tools](https://github.com/nregret/Comfyui-Anima-Tools)，直接读取已有安装的数据文件。
+
+## 本次改动
+
+| 改动点 | 说明 |
+|---|---|
+| 统一角色查询 | 新增 `anima_lookup.py character`；人工 CSV 优先，其次 Comfyui-Anima-Tools 官方数据/索引，最后可选 Danbooru CSV |
+| 角色与衣服拆分 | 分别返回角色 trigger、身份特征、来源服装及其他标签；不把来源服装视为官方默认设定 |
+| 服装检索与核实 | 新增 `anima_lookup.py clothing`，核实候选是否被本地 attire 词表收录；`--search` 搜索标签和中文服装配方 |
+| 角色换装 | 新增 `outfit_swap.py`；移除原衣服，保留兽耳、尾巴、halo 等身份特征，支持用户指定外观覆盖 |
+| 本地数据配置 | 新增 `config.example.yaml`；`config.local.yaml` 不提交 Git，支持路径参数与环境变量，不复制上游数据库 |
+| 回退与兼容 | 保留中文别名和原 CSV 入口；CSV 缺失不再丢失人工结果；显式 `--bangumi` / `--online` 启用在线回退 |
+| 别名补录 | `resolve_cn_character.py` 新增 `--set`，别名写入自动生成 `.bak`；统一查询只读，不自动写库 |
+| Skill 文档 | SFW 决策树、槽位顺序、冲突精简内联；修复断链，接入细节与可选代理流程改为按需参考 |
+| 依赖与验证 | 补充 `rapidfuzz` 依赖；新增标准库离线回归检查，覆盖查询、歧义、换装及回退 |
+
+新增入口：
+
+```bash
+uv run scripts/anima_lookup.py character "初音未来" --json
+uv run scripts/anima_lookup.py clothing "maid, apron, maid headdress" --json
+uv run scripts/outfit_swap.py --character "初音未来" --clothing "maid, apron, maid headdress" --json
+```
+
+首次接入时复制 `config.example.yaml` 为 `config.local.yaml`，填写 `anima_tools.path`。
+配置、查询字段与回退方式见 [角色服装接入](references/character-clothing.md)，完整生成规则见 [SKILL.md](SKILL.md)。
+
+## 原仓库基础说明
+
+以下保留原仓库 README 的表述。原文中的标签库文件、脚本数量和“七项校验”是原仓库说明；
+本分支实际运行以 `SKILL.md` 和现有脚本为准：当前总校验为六项，标签数仅统计，光影仅报告；
+本分支不提供 `manage_tags.py`、`check_tag_count.py`，也不支持校验命令的 `--scene` 参数。
+
 ## 快速开始 / Quick Start
 
 ```bash

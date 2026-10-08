@@ -5,8 +5,8 @@
 LLM 执行：
 
 ```bash
-# 1. 读决策树 → 单人展示类 → 槽位侧重在看
-# 2. 读 slot-order.md → 确认槽位顺序：count-identity → appearance → clothing → pose-action → expression → camera-shot → scene-environment → detail-mood
+# 1. 使用 SKILL.md 内联决策树 → 单人展示类 → 槽位侧重在看
+# 2. 使用 SKILL.md 内联槽位规则 → 确认槽位顺序：count-identity → appearance → clothing → pose-action → expression → camera-shot → scene-environment → detail-mood
 
 # 3. 自由生成标签（按槽位顺序，LLM 自行选词）
 prompt = "1girl, solo, blonde hair, twin tails, maid outfit, maid headdress, standing, looking at viewer, blush, slight smile, from front, full body, classroom, school desk, afternoon, motion lines"
