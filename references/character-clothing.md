@@ -61,7 +61,7 @@ uv run scripts/resolve_cn_character.py "砂狼白子" --set "shiroko_(blue_archi
 | found | 唯一精确匹配，可使用 results[0] |
 | ambiguous | 多个同名角色；根据作品消歧，不自动选第一个 |
 | candidates | 只有部分名称/作品命中；核对完整名字后重查 |
-| alias_only | 仅有本地别名；只用角色 trigger，其余从用户描述补充 |
+| alias_only | 仅有本地别名；只核实了 trigger，缺失资料继续后续来源查询 |
 | not_found | 无可验证记录，不能编造角色 trigger/默认服装 |
 | error | 配置/网络等错误，查看 error 字段 |
 
@@ -107,25 +107,59 @@ uv run scripts/outfit_swap.py --character "初音未来" \
 片段不包含场景/动作/镜头；多人时不要逐人复制 gender 到总人数槽位。
 继续组装最终 prompt 并执行 `check_prompt.py`。
 
-## 可选在线回退
+## 在线回退与 Agent 查询顺序
 
-默认全程离线，查询无写库副作用：
+Skill 要求 Agent 在未确定角色时依次查询：**本地 → Bangumi → Danbooru → 通用网络搜索**。
+任一步已核实唯一角色且数据足够即可停止；用户要求离线时不执行在线步骤。
+脚本本身默认离线，统一查询无写库副作用；Agent 在对应步骤显式加参数：
 
 ```bash
-uv run scripts/anima_lookup.py character "冷门中文名" --bangumi --online --json
+uv run scripts/anima_lookup.py character "冷门中文名" --json
+uv run scripts/anima_lookup.py character "冷门中文名" --bangumi --json
 uv run scripts/anima_lookup.py character "known_character_tag" --online --json
 ```
 
-`--bangumi` 只从 Bangumi 取得罗马字/英文候选，再交本地或 Danbooru 核实；
-罗马字不等于标准 Danbooru tag。统一入口不会把在线结果写入别名缓存。
-独立 `resolve_cn_character.py --bangumi` 保留原有写缓存行为，并自动备份。
+有已核实的英文作品名时，各步都可加 `--copyright "<作品名>"`；中文作品名不由此参数自动翻译。
+Bangumi 的名称候选尚未确定时，先用用户提供的作品核对候选关联作品和完整姓名，不按排名选择。
+第三步用已核实的名称候选查询 Danbooru 的角色 tag、作品 tag 和 wiki；没有精确 tag 候选时，
+Agent 使用搜索/浏览工具直接查 Danbooru，因为 `--online` 不提供模糊姓名搜索或 wiki 查询。
+
+同时传入 `--bangumi --online` 时，只有 Bangumi 精确角色具备罗马字且本地匹配失败，
+才会尝试该罗马字的 Danbooru 精确 tag。其他提前返回的候选/失败状态需要 Agent 继续第三步，
+不能把一次组合命令当成完整回退流程。
+
+Danbooru 仍无法解决时，Agent 再以“作品名 + 角色名”和已知日文/英文别名进行通用网络搜索。
+优先官方角色页和设定资料，必要时参考可靠角色资料页；分别核对身份、外观与服装/版本，记录来源链接。
+新找到的 tag 需返回 Danbooru 核实；网页中的外观文字不是标签存在的证明，未核实细节用英文自然语言表达。
+仍无法确定角色时报告歧义或缺失信息，不编造 trigger/默认服装；请求失败记录原因后继续下一来源，
+没有搜索/浏览工具时说明限制。通用搜索是 Agent 工作流，不是 `anima_lookup.py` 的脚本功能。
+
+`--bangumi` 先按 Bangumi 名称、中文名和别名查找唯一完整名称匹配，不按搜索排名选第一个。
+没有精确名称或出现多个同名角色时，返回 `bangumi_candidates` / `bangumi_total`，
+需要完整姓名或核实后补录别名；显示 `--limit 1` 也不会把歧义变成匹配成功。
+
+唯一完整名称匹配后读取该角色的关联作品，再以罗马字/英文名与作品同时匹配本地标签。
+关联作品中的完整英文词组可与本地作品名匹配，包括混合日文/英文标题；
+本地角色可以使用完整罗马字、姓名词序差异或罗马字的末尾名字，匹配必须保持词边界。
+只去掉与作品一致的括号后缀，保留泳装等版本限定，不拿普通角色冒充指定版本。
+不含可核实英文作品名、多个候选或仍无名称对应时，不自动认定为 `found`。
+
+例如 `龙华妃咲` → Bangumi `竜華キサキ` / `Ryuuge Kisaki` → 关联作品 `Blue Archive`
+→ 本地 `kisaki_(blue_archive)`。结果仍保留 `translated_name=ryuuge_kisaki`，
+用 `bangumi` 提供角色 ID/名称及关联作品，用 `match_basis` 说明匹配依据。
+这是一般名称/作品匹配，不包含针对这个角色的硬编码别名。
+
+统一入口不写别名缓存。独立 `resolve_cn_character.py --bangumi` 也只选唯一完整名称，
+但保留自动备份并写缓存的行为；保存的是罗马字候选，不保证等于 Danbooru canonical tag。
+已核实本地标准名称时，仍可使用 `--set` 保存映射，后续直接离线查询。
 
 `--online` 仅在本地没有唯一精确记录时调用 Danbooru：精确核实 category=4 角色 tag，
 最多取 20 张 general 评级、solo、仅此角色的图片；过滤 alternate_costume/cosplay/parody/
 crossover/genderswap/chibi，再取出现比例至少 60% 的身份/服装 tags。
 `source=danbooru-online-sample` 和 `sample_count` 标明统计来源。结果是推断，不是官方设定。
 服装分类仍依赖本地 attire 词表/服装名称特征；没有样本时只返回已核实的角色 trigger。
-网络请求设 15 秒超时；错误报告一次，不无限重试，不自动下载 CSV。
+Bangumi 搜索及关联作品请求各设 10 秒超时，Danbooru 请求设 15 秒超时；
+错误报告一次，不无限重试，不自动下载 CSV。
 
 ## 验证
 

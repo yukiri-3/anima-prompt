@@ -14,7 +14,7 @@ import yaml
 
 from anima_tools_source import AnimaToolsSource, ROOT, normalize, tokens
 from check_nsfw import NSFW_KEYWORDS
-from resolve_cn_character import load_cache, resolve
+from resolve_cn_character import load_cache, bangumi_candidates, bangumi_subjects
 
 COLORS = set("aqua black blonde blue brown cyan gray green grey indigo lavender magenta maroon orange pink purple red silver teal turquoise violet white yellow".split())
 LENGTHS = {"very short hair", "short hair", "medium hair", "long hair", "very long hair", "absurdly long hair"}
@@ -153,6 +153,101 @@ def online_character(query, vocabulary):
     return record
 
 
+def character_sources(source):
+    return [
+        ("extra-characters", lambda: csv_rows(ROOT / "tag-library/extra_characters.csv")),
+        (None, source.characters),
+        ("danbooru-csv", lambda: csv_rows(ROOT / "tag-library/danbooru_character.csv")),
+    ]
+
+
+def ascii_words(value):
+    return re.findall(r"[a-z0-9]+", normalize(value))
+
+
+def subject_matches(copyright, subjects):
+    # Match complete Latin title tokens, including mixed Japanese/English titles.
+    title = re.sub(r"\s*\(series\)$", "", normalize(copyright))
+    wanted = "".join(ascii_words(title))
+    if not wanted:
+        return False
+    for subject in subjects:
+        for field in ("name", "name_cn"):
+            words = ascii_words(subject.get(field, ""))
+            if any("".join(words[start:end]) == wanted
+                   for start in range(len(words)) for end in range(start + 1, len(words) + 1)):
+                return True
+    return False
+
+
+def bangumi_name_score(character, copyright, translations):
+    # Remove only the known series qualifier; costume/version qualifiers stay.
+    base = normalize(character)
+    suffix = f" ({normalize(copyright)})"
+    if copyright and base.endswith(suffix):
+        base = base[:-len(suffix)]
+    if "(" in base or ")" in base:
+        return 0
+    local = ascii_words(base)
+    if not local:
+        return 0
+    score = 0
+    for translation in translations:
+        words = ascii_words(translation)
+        if local == words or sorted(local) == sorted(words):
+            score = max(score, 2)
+        elif len("".join(local)) >= 3 and words[-len(local):] == local:
+            score = max(score, 1)
+    return score
+
+
+def lookup_bangumi(query, source, vocabulary, copyright, limit, online):
+    candidates = bangumi_candidates(query)
+    exact = [row for row in candidates if row["exact"]]
+    response = {"query": query, "results": [], "total": 0, "warnings": list(source.warnings)}
+    if len(exact) != 1:
+        shown = exact or candidates
+        response.update(status="ambiguous" if exact else "candidates" if candidates else "not_found",
+                        bangumi_candidates=shown[:limit], bangumi_total=len(shown))
+        if shown:
+            response["warnings"].append("Bangumi 未匹配唯一完整名称；请使用完整姓名或核实候选后补录别名")
+        return response
+    character = exact[0]
+    response["translated_name"] = character["translated_name"]
+    if not character["translations"]:
+        response.update(status="not_found", bangumi=character)
+        response["warnings"].append("Bangumi 精确角色没有罗马字/英文名，无法匹配本地标签")
+        return response
+    subjects = bangumi_subjects(character["id"])
+    response["bangumi"] = {"id": character["id"], "name": character["name"], "extracted": character["extracted"],
+                           "subjects": [{"id": s.get("id"), "name": s.get("name"), "name_cn": s.get("name_cn")} for s in subjects]}
+    requested_copyright = normalize(copyright) if copyright else None
+    for source_name, read_rows in character_sources(source):
+        matched = []
+        for row in read_rows():
+            series = normalize(row.get("copyright", ""))
+            if requested_copyright is not None and series != requested_copyright:
+                continue
+            score = bangumi_name_score(row.get("character", ""), series, character["translations"])
+            if score and subject_matches(series, subjects):
+                matched.append((score, character_record(row, source_name or row["source"], vocabulary)))
+        if matched:
+            best = max(score for score, _ in matched)
+            records = {(r["character"], r["copyright"]): r for score, r in matched if score == best}
+            response.update(status="found" if len(records) == 1 else "ambiguous", results=list(records.values())[:limit], total=len(records),
+                            match_basis="bangumi-exact-name+romanized-name+related-subject")
+            response["warnings"] = list(source.warnings)
+            return response
+    if online:
+        row = online_character(character["translated_name"], vocabulary)
+        if row and (requested_copyright is None or normalize(row["copyright"]) == requested_copyright) and subject_matches(row["copyright"], subjects):
+            response.update(status="found", results=[row], total=1, match_basis="bangumi-exact-name+danbooru-tag+related-subject")
+            return response
+    response["status"] = "not_found"
+    response["warnings"].append("Bangumi 找到精确角色，但本地标签的名称与关联作品尚未同时匹配；可核实后用 --set 补录")
+    return response
+
+
 def lookup_character(query, source, copyright=None, limit=10, online=False, bangumi=False):
     vocabulary = source.attire()
     cache = load_cache()
@@ -161,14 +256,9 @@ def lookup_character(query, source, copyright=None, limit=10, online=False, bang
     if isinstance(alias, str):
         queries.add(normalize(alias))
     cp = normalize(copyright) if copyright else None
-    sources = [
-        ("extra-characters", lambda: csv_rows(ROOT / "tag-library/extra_characters.csv")),
-        (None, source.characters),
-        ("danbooru-csv", lambda: csv_rows(ROOT / "tag-library/danbooru_character.csv")),
-    ]
     candidates = {}
     exact = {}
-    for source_name, read_rows in sources:
+    for source_name, read_rows in character_sources(source):
         for row in read_rows():
             name, series = normalize(row.get("character", "")), normalize(row.get("copyright", ""))
             if not name or cp is not None and cp != series:
@@ -189,15 +279,15 @@ def lookup_character(query, source, copyright=None, limit=10, online=False, bang
     # Translation is explicit and never writes inferred romanizations as verified tags.
     if bangumi and not alias:
         try:
-            _, _, translated = resolve(query)
+            result = lookup_bangumi(query, source, vocabulary, copyright, limit, online)
         except SystemExit as exc:
             raise ValueError("Bangumi 查询失败；参见网络错误信息") from exc
-        if translated:
-            result = lookup_character(translated, source, copyright, limit, online, False)
-            result["query"] = query
-            result["translated_name"] = translated
-            result["warnings"].append("Bangumi 罗马字是名称候选；请核对是否为原请求角色")
-            return result
+        if not result["results"] and candidates:
+            result["results"] = list(candidates.values())[:limit]
+            result["total"] = len(candidates)
+            if result["status"] == "not_found":
+                result["status"] = "candidates"
+        return result
     if online:
         record = online_character(alias or query, vocabulary)
         if record and (cp is None or normalize(record["copyright"]) == cp):
@@ -262,7 +352,7 @@ def emit(result, json_output=True):
             print(f"{row['character']} [{row['copyright']}] ({row['source']})")
             print("identity: " + ", ".join(row["identity"]))
             print("default_outfit: " + ", ".join(row["default_outfit"]))
-        for field in ("verified", "unverified", "blocked", "tags", "recipes", "warnings"):
+        for field in ("verified", "unverified", "blocked", "tags", "recipes", "bangumi_candidates", "warnings"):
             if result.get(field):
                 print(f"{field}: {result[field]}")
 

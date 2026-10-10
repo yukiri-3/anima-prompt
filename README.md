@@ -21,7 +21,7 @@
 | 服装检索与核实 | 新增 `anima_lookup.py clothing`，核实候选是否被本地 attire 词表收录；`--search` 搜索标签和中文服装配方 |
 | 角色换装 | 新增 `outfit_swap.py`；移除原衣服，保留兽耳、尾巴、halo 等身份特征，支持用户指定外观覆盖 |
 | 本地数据配置 | 新增 `config.example.yaml`；`config.local.yaml` 不提交 Git，支持路径参数与环境变量，不复制上游数据库 |
-| 回退与兼容 | 保留中文别名和原 CSV 入口；CSV 缺失不再丢失人工结果；显式 `--bangumi` / `--online` 启用在线回退 |
+| 回退与兼容 | 保留中文别名和原 CSV 入口；CSV 缺失不再丢失人工结果；`--bangumi` 结合完整名称、罗马字与关联作品匹配本地标准名，歧义返回候选；`--online` 启用 Danbooru 回退；Skill 要求 Agent 在未确定角色时按本地 → Bangumi → Danbooru → 通用网络搜索继续核实 |
 | 别名补录 | `resolve_cn_character.py` 新增 `--set`，别名写入自动生成 `.bak`；统一查询只读，不自动写库 |
 | Skill 文档 | SFW 决策树、槽位顺序、冲突精简内联；修复断链，接入细节与可选代理流程改为按需参考 |
 | 依赖与验证 | 补充 `rapidfuzz` 依赖；新增标准库离线回归检查，覆盖查询、歧义、换装及回退 |

@@ -14,8 +14,10 @@
 
 import argparse
 import json
+import re
 import shutil
 import sys
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -57,6 +59,57 @@ def bangumi_search(keyword):
         sys.exit(1)
 
 
+def bangumi_subjects(character_id):
+    request = urllib.request.Request(
+        f"https://api.bgm.tv/v0/characters/{int(character_id)}/subjects",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        subjects = json.load(response)
+    if not isinstance(subjects, list):
+        raise ValueError("Bangumi 关联作品响应不是数组")
+    return subjects
+
+
+def name_key(value):
+    text = unicodedata.normalize("NFKC", str(value or "")).lower()
+    return re.sub(r"[\s_·・-]+", "", text)
+
+
+def bangumi_candidates(keyword):
+    """Expose exact names and all search candidates; never pick by search rank."""
+    rows = bangumi_search(keyword)
+    if not isinstance(rows, list):
+        raise ValueError("Bangumi 搜索结果不是数组")
+    candidates = []
+    for row in rows:
+        names = [row.get("name"), row.get("name_cn")]
+        infobox = row.get("infobox") or []
+        translations = []
+        for item in infobox:
+            value = item.get("value")
+            if isinstance(value, str) and "名" in item.get("key", ""):
+                names.append(value)
+            elif item.get("key") == "别名" and isinstance(value, list):
+                for alias in value:
+                    if not isinstance(alias, dict) or not isinstance(alias.get("v"), str):
+                        continue
+                    names.append(alias["v"])
+                    if alias.get("k") in ("罗马字", "英文名"):
+                        translations.append((alias["k"], alias["v"]))
+        translations.sort(key=lambda pair: pair[0] != "罗马字")
+        source, extracted = translations[0] if translations else (None, None)
+        candidates.append({
+            "id": row.get("id"), "name": row.get("name"),
+            "names": list(dict.fromkeys(n for n in names if isinstance(n, str) and n.strip())),
+            "exact": any(name_key(n) == name_key(keyword) for n in names if n),
+            "source": source, "extracted": extracted,
+            "translated_name": to_snake(extracted) if extracted else None,
+            "translations": list(dict.fromkeys(n for _, n in translations)),
+        })
+    return candidates
+
+
 def extract_name(infobox):
     for item in infobox:
         if item.get("key") != "别名":
@@ -74,16 +127,10 @@ def to_snake(name):
 
 
 def resolve(keyword):
-    results = bangumi_search(keyword)
-    if not results:
-        return None, None, None
-
-    for bgm_char in results:
-        source, extracted = extract_name(bgm_char.get("infobox", []))
-        if not extracted:
-            continue
-        return source, extracted, to_snake(extracted)
-
+    exact = [row for row in bangumi_candidates(keyword) if row["exact"]]
+    if len(exact) == 1 and exact[0]["extracted"]:
+        row = exact[0]
+        return row["source"], row["extracted"], row["translated_name"]
     return None, None, None
 
 
@@ -146,8 +193,8 @@ def main():
     else:
         if source is None and extracted is None:
             print(
-                f"Bangumi 找到角色但无罗马字/英文名: {keyword}\n"
-                f"  可手动编辑 {CACHE_PATH} 补录映射",
+                f"未找到唯一且含罗马字/英文名的 Bangumi 精确角色: {keyword}\n"
+                "  先用 anima_lookup.py character --bangumi --json 查看候选，再用 --set 补录已核实的角色 tag",
                 file=sys.stderr,
             )
         else:

@@ -130,7 +130,7 @@ class LookupTests(unittest.TestCase):
         self.assertEqual(lookup.lookup_character("孤立别名", source)["status"], "alias_only")
 
     def test_no_network_by_default(self):
-        with patch.object(lookup, "api_get", side_effect=AssertionError("network")), patch.object(lookup, "resolve", side_effect=AssertionError("network")):
+        with patch.object(lookup, "api_get", side_effect=AssertionError("network")), patch.object(lookup, "bangumi_candidates", side_effect=AssertionError("network")):
             self.assertEqual(lookup.lookup_character("unknown", self.source())["status"], "not_found")
 
     def test_exact_primary_skips_large_fallback_csv(self):
@@ -143,13 +143,72 @@ class LookupTests(unittest.TestCase):
             self.assertEqual(lookup.lookup_character("test girl", self.source())["status"], "found")
 
     def test_bangumi_translation_is_rechecked_and_failure_is_structured(self):
-        with patch.object(lookup, "resolve", return_value=("罗马字", "Test Girl", "test_girl")):
+        candidate = {"id": 1, "name": "测试角色", "exact": True, "extracted": "Test Girl", "translated_name": "test_girl", "translations": ["Test Girl"]}
+        with patch.object(lookup, "bangumi_candidates", return_value=[candidate]), patch.object(lookup, "bangumi_subjects", return_value=[{"name": "テスト -Test Game-"}]):
             result = lookup.lookup_character("未缓存角色", self.source(), bangumi=True)
         self.assertEqual(result["translated_name"], "test_girl")
         self.assertEqual(result["results"][0]["source"], "comfyui-anima-tools")
-        with patch.object(lookup, "resolve", side_effect=SystemExit(1)):
+        with patch.object(lookup, "bangumi_candidates", side_effect=SystemExit(1)):
             with self.assertRaises(ValueError):
                 lookup.lookup_character("未缓存角色", self.source(), bangumi=True)
+
+    def setup_kisaki(self):
+        self.index += [{"name": "kisaki (blue archive)", "copyright": "blue archive"},
+                       {"name": "kisaki (swimsuit) (blue archive)", "copyright": "blue archive"},
+                       {"name": "kisaki (other game)", "copyright": "other game"},
+                       {"name": "tokisaki (blue archive)", "copyright": "blue archive"}]
+        self.write_data()
+        return {"id": 124994, "name": "竜華キサキ", "exact": True, "extracted": "Ryuuge Kisaki", "translated_name": "ryuuge_kisaki", "translations": ["Ryuuge Kisaki"]}
+
+    def test_bangumi_full_name_maps_short_tag_using_subject(self):
+        candidate = self.setup_kisaki()
+        with patch.object(lookup, "bangumi_candidates", return_value=[candidate]), patch.object(lookup, "bangumi_subjects", return_value=[{"name": "ブルーアーカイブ -Blue Archive-"}]), patch.object(resolver, "save_cache", side_effect=AssertionError("must not cache")):
+            result = lookup.lookup_character("龙华妃咲", self.source(), bangumi=True)
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["results"][0]["character"], "kisaki_(blue_archive)")
+        self.assertEqual(result["translated_name"], "ryuuge_kisaki")
+
+    def test_bangumi_name_without_verified_subject_is_not_selected(self):
+        candidate = self.setup_kisaki()
+        with patch.object(lookup, "bangumi_candidates", return_value=[candidate]), patch.object(lookup, "bangumi_subjects", return_value=[{"name": "Unrelated Game"}]):
+            self.assertEqual(lookup.lookup_character("龙华妃咲", self.source(), bangumi=True)["status"], "not_found")
+
+    def test_bangumi_wrong_requested_copyright_is_not_accepted(self):
+        candidate = self.setup_kisaki()
+        with patch.object(lookup, "bangumi_candidates", return_value=[candidate]), patch.object(lookup, "bangumi_subjects", return_value=[{"name": "Blue Archive"}]):
+            self.assertEqual(lookup.lookup_character("龙华妃咲", self.source(), copyright="other game", bangumi=True)["status"], "not_found")
+
+    def test_bangumi_short_query_does_not_pick_first_search_result(self):
+        candidate = self.setup_kisaki()
+        candidate["exact"] = False
+        with patch.object(lookup, "bangumi_candidates", return_value=[candidate]), patch.object(lookup, "bangumi_subjects", side_effect=AssertionError("must not guess character")):
+            result = lookup.lookup_character("妃咲", self.source(), bangumi=True)
+        self.assertEqual(result["status"], "candidates")
+        self.assertEqual(result["results"], [])
+        self.assertEqual(result["bangumi_total"], 1)
+
+    def test_bangumi_duplicate_exact_names_stay_ambiguous_with_limit_one(self):
+        candidate = self.setup_kisaki()
+        with patch.object(lookup, "bangumi_candidates", return_value=[candidate, candidate | {"id": 2}]), patch.object(lookup, "bangumi_subjects", side_effect=AssertionError("ambiguous")):
+            result = lookup.lookup_character("龙华妃咲", self.source(), bangumi=True, limit=1)
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(result["bangumi_total"], 2)
+
+    def test_bangumi_native_names_are_checked_before_translation(self):
+        rows = [
+            {"id": 2, "name": "黒川妃咲", "infobox": [{"key": "别名", "value": [{"k": "罗马字", "v": "Kurokawa Kisaki"}]}]},
+            {"id": 1, "name": "竜華キサキ", "infobox": [{"key": "简体中文名", "value": "龙华妃咲"}, {"key": "别名", "value": [{"k": "第二中文名", "v": "龙华妃姬"}, {"k": "罗马字", "v": "Ryuuge Kisaki"}]}]},
+        ]
+        with patch.object(resolver, "bangumi_search", return_value=rows):
+            self.assertEqual(resolver.resolve("龙华妃咲")[2], "ryuuge_kisaki")
+            self.assertEqual(resolver.resolve("龙华妃姬")[2], "ryuuge_kisaki")
+            self.assertEqual(resolver.resolve("妃咲"), (None, None, None))
+
+    def test_bangumi_matching_uses_name_boundaries_and_preserves_variants(self):
+        self.assertEqual(lookup.bangumi_name_score("tokisaki (blue archive)", "blue archive", ["Ryuuge Kisaki"]), 0)
+        self.assertEqual(lookup.bangumi_name_score("ryuuge (blue archive)", "blue archive", ["Ryuuge Kisaki"]), 0)
+        self.assertEqual(lookup.bangumi_name_score("kisaki (swimsuit) (blue archive)", "blue archive", ["Ryuuge Kisaki"]), 0)
+        self.assertFalse(lookup.subject_matches("blue archive", [{"name": "Blue Archiver"}]))
 
     def test_clothing_validation_does_not_invent_or_accept_recipe_tags(self):
         result = lookup.verify_clothing("maid, maid, black dress, imaginary outfit", self.source())
